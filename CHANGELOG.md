@@ -116,6 +116,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Tests
 
 - **Empty `CUBRID_PASSWORD` is covered** — `tests/test_config.py` checks that an empty password is accepted, as CUBRID's default `dba` user has none.
+- Cover `schema_definitions` with an unknown table name (#329).
 
 ## [0.5.0] - 2026-10-12
 
