@@ -1,6 +1,6 @@
 <!-- CUBRID-LAB-ICON:START -->
 <p align="center">
-  <a href="https://github.com/cubrid-lab/brand"><img src="https://raw.githubusercontent.com/cubrid-lab/brand/94e2bf6b915d7ef6a1111e06376f693f70bf6c4e/dist/icons/cubrid-mcp-server.svg" alt="cubrid-mcp-server icon (CUBRID Lab brand repository)" width="120"></a>
+  <a href="https://github.com/cubrid-lab/brand"><img src="https://raw.githubusercontent.com/cubrid-lab/brand/8aa81b79f00ae936b03a9546f14f514c5e2554a7/dist/icons/cubrid-mcp-server.svg" alt="cubrid-mcp-server icon (CUBRID Lab brand repository)" width="120"></a>
 </p>
 <!-- CUBRID-LAB-ICON:END -->
 
@@ -104,6 +104,9 @@ Optional settings:
 | `CUBRID_MCP_MAX_ROWS` | `1000` | Max rows returned by `execute_query` before truncation |
 | `CUBRID_MCP_MAX_SQL_LENGTH` | `65536` | Max length (characters) of a submitted SQL statement |
 | `CUBRID_MCP_QUERY_TIMEOUT` | `30` | Per-statement socket read timeout in seconds. If the server sends no data within this window the query is aborted and the connection is reset. This is a socket read timeout, not a true server-side statement timeout. |
+| `CUBRID_MCP_CONNECT_TIMEOUT` | `10` | Timeout in seconds for opening a connection to the CUBRID broker (positive number). Raise it for slow or distant brokers. |
+| `CUBRID_MCP_MAX_ROW_COUNT_TABLES` | `50` | Max tables `table_row_counts` counts in one call: the default call counts the first N user tables and a longer explicit list is rejected |
+| `CUBRID_MCP_MAX_INLINE_BINARY_BYTES` | `256` | Binary values up to this many bytes are returned base64-encoded; larger ones are summarized as `<binary N bytes>`. `0` summarizes every non-empty binary value. |
 | `CUBRID_MCP_AUDIT_LOG` | `0` | Opt-in audit logging. When enabled, emits one redaction-safe JSON record per executed statement (`execute_query`/`explain_query`/`execute_write`) to **stderr** — see [Logging](#logging). Honoured per connection (`CUBRID_<NAME>_MCP_AUDIT_LOG`). |
 | `CUBRID_MCP_WRITE` | `0` | Opt-in write mode. When enabled (`1`), registers the `execute_write` tool for single-statement DML. Honoured per connection (`CUBRID_<NAME>_MCP_WRITE`); the tool is registered when any connection enables it. Off by default. |
 
@@ -293,19 +296,30 @@ The **raw SQL text, bound parameters, and literal values are never logged**, so 
 git clone https://github.com/cubrid-lab/cubrid-mcp-server.git
 cd cubrid-mcp-server
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+python -m pip install --upgrade pip   # the dev group needs pip >= 25.1
+make install        # python -m pip install -e . --group dev
+make doctor         # check the required tools
 
-# Lint & type check
-ruff check .
-mypy cubrid_mcp_server
+# Lint, format check & type check (ruff check ., ruff format --check ., mypy)
+make check
 
-# Unit tests
-pytest -m "not integration"
+# Unit tests with the 95% coverage floor (no database)
+make test
 
-# Integration tests (requires running CUBRID)
+# Integration tests on a run-owned Compose CUBRID that make starts and always removes
+make integration    # CUBRID_VERSION=11.4 CUBRID_TEST_PORT=33000 by default
+
+# Integration tests against a CUBRID you already run
 export CUBRID_HOST=localhost CUBRID_USER=dba CUBRID_PASSWORD="" CUBRID_DATABASE=demodb
-pytest -m integration
+make integration-local
+
+# A persistent local CUBRID (docker-compose.yml) for manual work; make integration never touches it
+make docker-up      # demodb on 127.0.0.1:33000 (CUBRID_VERSION, CUBRID_TEST_PORT)
+make docker-down    # keeps the data volume; make docker-clean deletes it
 ```
+
+CI calls the same Make targets; `make help` lists them all and
+[CONTRIBUTING.md](CONTRIBUTING.md) describes each one.
 
 The live shared-session concurrency regression can also be run on its own:
 

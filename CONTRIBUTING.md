@@ -12,6 +12,7 @@ This document only adds what is repo-specific; it does not repeat the org guide.
 ## Prerequisites
 
 - Python 3.11 or later
+- pip 25.1 or later (to install the `dev` dependency group; `python -m pip install --upgrade pip`)
 - Git
 - Docker (only needed for the integration tests)
 
@@ -21,46 +22,207 @@ This document only adds what is repo-specific; it does not repeat the org guide.
 git clone https://github.com/cubrid-lab/cubrid-mcp-server.git
 cd cubrid-mcp-server
 python3 -m venv .venv && source .venv/bin/activate
+python -m pip install --upgrade pip   # the dev group needs pip >= 25.1
 
-# Editable install with dev extras (ruff, mypy, pytest, ...)
+# Editable install plus the dev dependency group (ruff, mypy, pytest, ...)
 make install
 ```
 
-`make install` runs `pip install -e ".[dev]"`.
+`make install` runs `python3 -m pip install -e . --group dev`. The contributor tools
+live in the PEP 735 `[dependency-groups] dev` group of `pyproject.toml`, so they are
+not an extra of the published package. The Makefile runs `pytest`, `ruff` and `mypy`
+through the same interpreter (`$(PYTHON) -m ...`, `PYTHON ?= python3`); override
+`PYTHON`, `PYTEST`, `RUFF` or `MYPY` on the command line to use another one, e.g.
+`make lint PYTHON=.venv/bin/python`. `make doctor` then checks that
+Python 3.11+, `ruff`, `mypy`, `pytest`, `pytest-cov` and `pytest-asyncio` are
+available; it exits non-zero, without a success line, if any is missing. Docker
+is reported but optional (only `make integration` and the `docker-*` targets need it). `make help` lists
+every target, grouped by purpose.
 
 ## Local Checks Before Pushing
 
-Run these before opening a PR — they mirror what CI runs, so passing them
-locally is the fastest way to avoid a red build:
+The Makefile is the canonical interface: CI's lint, type, unit and live jobs call
+these same targets (#379), so passing them locally is the fastest way to avoid a
+red build:
 
 ```bash
-make lint        # ruff check
-make format      # ruff format + ruff check --fix
-make typecheck   # mypy (strict) on cubrid_mcp_server/
-make check       # lint + typecheck in one go (no tests)
+make lint          # ruff check .                (same scope as CI)
+make format-check  # ruff format --check .
+make typecheck     # mypy (strict) on cubrid_mcp_server
+make check         # lint + format-check + typecheck (no tests)
+make format        # ruff format . + ruff check --fix . (the only target that edits files)
 ```
 
 ## Tests
 
 ```bash
-make test         # unit tests only (pytest -m "not integration")
-make integration  # integration tests — requires a live CUBRID (see below)
+make test               # offline unit tests with coverage; fails below fail_under (95)
+make verify             # make check, make test, then make integration (needs Docker); writes test-results/verify/
+make integration        # integration tests on a Compose CUBRID it starts and removes
+make integration-local  # integration tests against a CUBRID you already run
+make docker-up          # a persistent local CUBRID for manual work (Docker Compose)
 ```
+
+`make test` runs `pytest -m "not integration"` with `--cov=cubrid_mcp_server`,
+so the `fail_under = 95` floor in `pyproject.toml` is enforced locally exactly as
+in CI. It writes `coverage.xml` (CI uploads that file to Codecov); extra pytest
+arguments go in `PYTEST_ARGS`, for example `make test PYTEST_ARGS="-k config -x"`.
+`make clean` removes only generated, gitignored artifacts (build output, caches,
+`.coverage`, `coverage.xml`, `htmlcov/`, `test-results/`).
+
+### Test results
+
+`make test` and `make integration` also write their results under the gitignored
+`test-results/` directory, which each run replaces for its lane, and `make verify`
+writes an aggregate of them (see [Verification summary](#verification-summary)):
+
+| Path | Written by | Content |
+|------|------------|---------|
+| `test-results/test/junit.xml`, `coverage.xml`, `summary.json` | `make test` | pytest JUnit XML, the Cobertura coverage report (the root `coverage.xml` is a copy for Codecov) and the summary |
+| `test-results/integration/junit.xml`, `summary.json`, `environment.json` | `make integration` | JUnit XML, the summary, and the Python, package and CUBRID versions, platform and command (credentials in it masked, see below) |
+| `test-results/integration/logs/cubrid.log` | `make integration`, on a failure only | the service log |
+| `test-results/verify/summary.json`, `junit/<lane>.xml`, `environment.json` | `make verify`, always | the aggregate summary and masked copies of the lanes' JUnit files and the live `environment.json` |
+
+`scripts/report_results.py` writes `summary.json` (`schema_version`, `status`,
+`counts` and, for `make test`, `coverage`) and each command ends with a one-line
+summary of the same status and counts, for example
+`test: PASS selected=1665 passed=1665 ... coverage=99.31% -> test-results/test/summary.json`.
+The status is `PASS`, `FAIL` (a failed or errored test, or a non-zero exit status such
+as a missed coverage floor) or `INCOMPLETE` (no JUnit file, nothing collected, or no
+test passed because every selected test skipped); `INCOMPLETE` is never `PASS`. The
+exit status of both commands is unchanged. `xpassed` is always 0 because JUnit XML
+cannot distinguish an unexpected pass from a pass.
+
+`environment.json` is never built from the process environment, so an exported
+`CUBRID_PASSWORD` cannot reach it, but its `command` is the `--pytest` value of
+`make integration` (`PYTEST=...`) or the `--command` of `report_results.py environment`.
+Before writing it, `report_results.py` masks credentials embedded in that string: a URL
+password (`cubrid://dba:***@host`) and the value of a `password`, `passwd`, `pwd`,
+`token`, `secret`, `api_key` or `apikey` assignment or option (`PASSWORD=***`,
+`CUBRID_PASSWORD=***`, `--password=***`, `--password ***`); everything else is kept as
+given. This is a best-effort safety net, not a parser (a short option such as
+`-p secret` is not recognized; the module docstring lists the limits), and the command
+line is still visible to other processes, so supply secrets through environment
+variables or the CI secret store, never on the command line.
+
+CI publishes the same results on every run of `make test` (the `lint-and-test` job of
+`ci.yml`) and `make integration` (`ci.yml` and `integration-full.yml`), pass or fail:
+the one-line summary is appended to the run's job summary
+(`scripts/report_results.py step-summary`), and the whole `test-results/` tree is
+uploaded as the `test-results-test-py<python>`,
+`test-results-integration-cubrid<cubrid>` or
+`test-results-integration-py<python>-cubrid<cubrid>` artifact, kept for 7 days. This adds
+no permissions: the workflows keep `contents: read` and the artifacts are readable by
+anyone who can read the run.
+
+#### Verification summary
+
+`make verify` runs `scripts/run_verify.py`, which runs `make check`, `make test` and
+`make integration` one after another, stops at the first failing phase and then always
+writes `test-results/verify/` (after removing the previous `verify`, `test` and
+`integration` results), also after a failure or a signal:
+
+- `summary.json`: `schema_version`, `lane` (`verify`), the overall `status` and one
+  entry per phase (`check`, `test`, `integration`) with its `status`, `exit_code`, the
+  lane's own `summary` path and `summary_status`, and a list of `problems`. A phase is
+  `PASS` only when it exited 0 and its lane summary says `PASS`, and `NOT_RUN` (exit
+  code `null`) when it never started. The overall status is `FAIL` when a phase failed,
+  `INCOMPLETE` when a phase did not run, a live lane proved nothing (every test
+  skipped), a lane summary is missing, unreadable or has no string status, or a result
+  file could not be copied, and `PASS` only otherwise.
+- `junit/test.xml`, `junit/integration.xml`: copies of the JUnit files of the lanes
+  that ran this time.
+- `environment.json`: a copy of the live lane's `environment.json`.
+
+Every copy has the configured connection passwords (`CUBRID_PASSWORD` and the
+`CUBRID_<NAME>_PASSWORD` of each connection in `CUBRID_CONNECTIONS`, as the server reads
+them, also percent-encoded and XML-escaped) replaced with `***`. The run ends with one
+line that matches `summary.json`, for example
+`verify: FAIL check=PASS test=FAIL integration=NOT_RUN [integration did not run] -> test-results/verify/summary.json`.
+The exit status is the first failing phase's, 1 when every phase exited 0 but the
+summary is not `PASS`, or 128 + the signal number: the first SIGINT, SIGTERM or SIGHUP
+is forwarded to the running phase (the live lane still removes its Compose project),
+no further phase starts and the summary is still written. `make -n verify` writes
+nothing.
 
 ### Running the Integration Suite
 
-The integration tests need a running CUBRID with the `demodb` database. CI
-starts `cubrid/cubrid:<version>` (11.4 by default, see the tiers below) in
-Docker and waits for `demodb` to be ready; you can do the same locally, then
-point the tests at it:
+`make integration` needs only Docker (with the Compose plugin). It starts the
+`cubrid` service of the root `docker-compose.yml`, the same definition
+`make docker-up` uses (`cubrid/cubrid:<CUBRID_VERSION>`, 11.4 by default, with
+`demodb`), as a Compose project of its own named `cubrid-mcp-it-<random id>`,
+publishes the broker on `127.0.0.1:<CUBRID_TEST_PORT>` (33000 by default) and
+waits until the service's health check passes (`up --detach --wait`). It then runs
+`pytest -m integration -v` against it and always takes that project down with
+`down --volumes`, removing its container, network and volumes, on success,
+failure, a readiness failure, Ctrl-C or a signal (SIGINT/SIGTERM/SIGHUP). On a failure it prints
+the service log first. The exit status is the first failing step's (128 + the
+signal number after a signal); a cleanup failure fails an otherwise successful
+run. CI's live jobs run the same target with the matrix version:
+
+```bash
+make integration                                            # CUBRID 11.4 on port 33000
+make integration CUBRID_VERSION=11.2 CUBRID_TEST_PORT=33524  # another version or a free port
+```
+
+`CUBRID_TEST_PORT` is the one port variable of `make integration` and
+`make docker-up`. `INTEGRATION_PORT`, its older name for `make integration`, still
+works and wins when set (`make integration INTEGRATION_PORT=33524`).
+
+The test endpoint is pinned to `127.0.0.1:<port>/demodb` as `dba`, so exported
+`CUBRID_*` variables cannot redirect the run, and the project name is passed
+explicitly, so `COMPOSE_PROJECT_NAME` cannot either. Because every run has its own
+project, two runs on different ports do not interfere, and a running
+`make docker-up` lab (the default or your `COMPOSE_PROJECT_NAME` project) is never
+stopped or emptied; only the host port has to differ. No other container, image or
+volume is touched.
+
+To run the suite against a CUBRID you manage yourself (with `demodb`), point the
+tests at it and use `make integration-local`:
 
 ```bash
 export CUBRID_HOST=localhost
+export CUBRID_PORT=33000
 export CUBRID_USER=dba
 export CUBRID_PASSWORD=""
 export CUBRID_DATABASE=demodb
-make integration
+make integration-local
 ```
+
+### A Persistent Local CUBRID (Docker Compose)
+
+For manual work (trying the server from an MCP client, exploring the catalog,
+running `make integration-local` repeatedly), the root `docker-compose.yml`
+defines one service, `cubrid`: `cubrid/cubrid:<CUBRID_VERSION>` (11.4 by default)
+with `demodb`, its broker published only on `127.0.0.1:<CUBRID_TEST_PORT>`
+(33000 by default) and its data in named volumes (both the 11.4 and the pre-11.4 database paths). The health check runs
+`csql -u dba demodb -c 'SELECT 1;'` inside the container.
+
+```bash
+make docker-up                                             # start it and wait until healthy
+make docker-up CUBRID_VERSION=11.2 CUBRID_TEST_PORT=33400  # another version or a free port
+make docker-down                                           # remove the container and network; keep the data
+make docker-clean                                          # also delete the data volume (and demodb)
+```
+
+`make docker-down` keeps the volume, so the next `make docker-up` opens the same
+`demodb` with your tables in it; `make docker-clean` is the one target that
+deletes it. The service has no fixed container name: Docker Compose names the
+container, network and volume after the project (by default the checkout's
+directory name), so set `COMPOSE_PROJECT_NAME` to keep two checkouts apart, and
+use the same value for `docker-down` and `docker-clean`. Point the tests at it
+with `make integration-local`:
+
+```bash
+make docker-up
+export CUBRID_HOST=127.0.0.1 CUBRID_PORT=33000 CUBRID_USER=dba CUBRID_PASSWORD="" CUBRID_DATABASE=demodb
+make integration-local
+```
+
+`make integration` and CI start this same service, but as a separate,
+run-owned Compose project that they always remove, so they never touch your
+Compose data; a running Compose service only matters to them if both use the same
+host port (pick another `CUBRID_TEST_PORT` for one of them).
 
 ## What CI Enforces
 
@@ -78,7 +240,8 @@ lanes run:
 | Connection / catalog SQL (`database.py`, `context.py`, `tests/conftest.py`, `tests/test_integration.py`) | Python 3.12 | — | CUBRID 11.2 + 11.4 |
 | Other workflows (`.github/workflows/*` except `ci.yml`, see the impact table below) | Python 3.12 | — | — |
 | Dependency metadata (`pyproject.toml`) | Python 3.11, 3.12, 3.14 | yes | CUBRID 11.2 + 11.4 |
-| CI policy (`ci.yml`, `scripts/ci_scope.py`, `tests/test_ci_scope.py`), push to `main`, manual dispatch | Python 3.11, 3.12, 3.14 | yes | CUBRID 11.2 + 11.4 |
+| CI policy (`ci.yml`, `scripts/ci_scope.py`, `tests/test_ci_scope.py`) | Python 3.11, 3.12, 3.14 | yes | CUBRID 11.2 + 11.4 |
+| Push to `main` (#417) | Python 3.11, 3.12, 3.14 | yes | CUBRID 11.4 |
 | Any other path (fail-closed) | Python 3.12 | — | CUBRID 11.4 |
 
 Workflow edits are routed by which lane can actually detect a problem in the
@@ -96,7 +259,7 @@ the `integration` marker.
 | `dependabot-auto-merge.yml` | `test_workflow_timeouts.py` (and the other all-workflow scans) | Unit (3.12) |
 | `docs-sync.yml` | Runs itself on the PR; the all-workflow scans | Unit (3.12) |
 | `docs.yml` | `test_ci_policy.py`; builds docs on PRs touching docs paths | Unit (3.12) |
-| `integration-full.yml` | `test_ci_scope.py`, `test_release_workflows.py`, `test_workflow_installs.py`, `test_workflow_timeouts.py`, plus a **manual `workflow_dispatch` on the PR head, linked from the PR** (not automated; the release gate depends on it) | Unit (3.12) |
+| `integration-full.yml` | `test_ci_scope.py`, `test_latest_server.py`, `test_release_workflows.py`, `test_workflow_installs.py`, `test_workflow_timeouts.py`, plus a **manual `workflow_dispatch` on the PR head, linked from the PR** (not automated; the release gate depends on it) | Unit (3.12) |
 | `pr-title.yml` | Runs itself on the PR; `test_pr_title.py` | Unit (3.12) |
 | `release-please.yml` | `test_release_workflows.py`, `test_release_please_config.py`, `test_workflow_timeouts.py` | Unit (3.12) |
 | `publish-pypi.yml` | `test_release_workflows.py`, `test_pypi_duplicate_guard.py`, `test_prepare_release.py`, `test_workflow_timeouts.py` | Unit (3.12) |
@@ -132,7 +295,7 @@ Every Python job in `ci.yml` and `integration-full.yml` installs with a pinned
 uv instead of pip (#229): `astral-sh/setup-uv` (pinned to a commit SHA, with
 `version` pinned) runs after `actions/setup-python` with the same
 `python-version`, caches per job (`cache-suffix: ${{ github.job }}`, keyed on
-`pyproject.toml`), installs with `uv pip install --system` and logs the resolved
+`pyproject.toml`), installs with `uv pip install --system -e . --group dev` and logs the resolved
 versions with `uv pip freeze --system`. uv resolves the same package set as pip
 from the same `pyproject.toml` constraints; only the installer changes. The
 release smoke venvs, the docs build and the upstream canary keep plain pip.
@@ -140,15 +303,22 @@ release smoke venvs, the docs build and the upstream canary keep plain pip.
 
 The lanes check:
 
-- **`ruff check .`** — linting.
-- **`ruff format --check .`** — formatting (run `make format` to fix).
-- **`mypy` in strict mode** — type checking of `cubrid_mcp_server/`.
-- **Pytest with a 95% coverage floor** — `fail_under = 95` in `pyproject.toml`.
-  This is the gate that most often fails a PR; add tests for new code paths.
+- **`make lint`** (`ruff check .`) — linting.
+- **`make format-check`** (`ruff format --check .`) — formatting (run `make format` to fix).
+- **`make typecheck`** (`mypy` in strict mode) — type checking of `cubrid_mcp_server/`.
+- **`make test`** (pytest with a 95% coverage floor) — `fail_under = 95` in
+  `pyproject.toml`. This is the gate that most often fails a PR; add tests for new
+  code paths. Only the Codecov upload of `coverage.xml` is CI-specific.
 - **`lowest-direct` job** — reinstalls with the lowest allowed direct
   dependency versions (`uv pip install --resolution lowest-direct`) and re-runs
-  the unit tests, catching accidental use of newer-than-declared APIs.
-- **`integration`** — `pytest -m integration` against a live CUBRID container.
+  the unit tests, catching accidental use of newer-than-declared APIs. It runs
+  `pytest -m "not integration"` without coverage on purpose: it checks dependency
+  floors, not the coverage gate, so it is a weaker lane than `make test`, not a
+  replacement for it.
+- **`integration`** — `make integration CUBRID_VERSION=<matrix version>`: a
+  run-owned Compose project of the `docker-compose.yml` service, `pytest -m
+  integration`, the service log on a failure and guaranteed `down --volumes`. `integration-full.yml` runs the same
+  target for each matrix cell.
 - **`python scripts/lint_changelog.py`** — checks `CHANGELOG.md` structure and
   version ordering. In `[Unreleased]` and in releases after 0.4.0 it also
   rejects a repeated `###` heading within one version and requires the standard
@@ -171,12 +341,50 @@ requires it to fail on any non-success planning or matrix result.
 
 The full Python {3.11–3.14} × CUBRID {10.2, 11.0, 11.2, 11.4} matrix lives in
 `.github/workflows/integration-full.yml`. It runs weekly (Sunday 03:00 UTC), on
-manual dispatch (`scope` = `full` or `corners`), and always in full as the
-release gate (`publish-pypi.yml` calls it at the release commit; a release run that
-is not full or not fully green blocks publication). Monday–Saturday it runs only
-the corners — Python 3.11 × CUBRID 10.2 and Python 3.14 × CUBRID 11.4 — to
-catch compatibility drift between weekly runs. The advisory upstream canaries
+manual dispatch (`scope` = `full` (default) or `corners`, Python 3.11 × CUBRID 10.2
+and Python 3.14 × CUBRID 11.4), and always in full as the release gate
+(`publish-pypi.yml` calls it at the release commit; a release run that is not full
+or not fully green blocks publication). The advisory upstream canaries
 (`upstream-canary.yml`, pycubrid@main and latest FastMCP) run weekly on Monday.
+
+Which CUBRID versions run on which event (#417):
+
+| Event | Live CUBRID |
+|---|---|
+| Ordinary PR | 11.4 for runtime/test changes; 11.2 + 11.4 for the connection/catalog, dependency and CI-policy paths above; none for docs-only |
+| Push to `main` | 11.4 only, with the Python 3.11/3.12/3.14 unit lanes and `lowest-direct` |
+| Weekly schedule (Sunday) | The full 4 × 4 matrix, plus the advisory newest-image check below |
+| Manual `integration-full.yml` dispatch | The full 4 × 4 matrix (or the two corners when asked), plus the newest-image check |
+| Release (`workflow_call` from `publish-pypi.yml`) | The full 4 × 4 matrix, fail-closed; never the advisory check |
+
+So a push to `main` is representative 11.4 evidence; every-version evidence comes
+from the PR lanes its paths selected, the weekly run and the release gate. Until
+#417 a push also ran 11.2, and a Monday–Saturday schedule ran the two corner cells;
+those 15 corner runs (2026-10-08 to 2026-10-24) all passed and their cells are in
+every weekly and release run, so the daily schedule was removed rather than kept.
+Measured on GitHub Actions before the change (median of the last 10 successful
+`main` pushes; billed minutes round each job up): the `integration (11.2)` job of a
+push took 55 s (1 billed minute) and there were 49 pushes to `main` from
+2026-10-18 to 2026-10-25; the six weekday corner runs of 2026-10-19 to 2026-10-24
+started 12 live cells, 9.5 job-minutes and 24 billed minutes in all.
+
+Each matrix cell records the image it ran (`Record CUBRID image`: the
+`cubrid/cubrid@sha256:…` digest and its `cubrid_rel` engine version) in its step
+summary. The advisory `Newest CUBRID image (advisory)` job (`latest-server`,
+[`scripts/latest_server.py`](scripts/latest_server.py), weekly and on manual
+dispatch only, `continue-on-error`, never a need of the matrix result) pulls
+`cubrid/cubrid:latest` and `cubrid/cubrid:11.4` once and compares their digests and
+engine builds:
+
+- same digest: no extra database starts; the summary names that digest, and the
+  11.4 cells tested the newest-stable image only if their recorded digest matches;
+- a different digest that is not a newer engine build: nothing more runs;
+- a newer engine build (for example a future 11.5): a focused advisory canary runs
+  `make integration` on that immutable digest. A failure is shown on the run but
+  blocks nothing, and the image is never added to the supported versions or the
+  release matrix automatically;
+- a failed or malformed pull or lookup: reported as UNVERIFIED with a warning,
+  never as passed.
 
 ## Main branch protection
 
@@ -276,140 +484,35 @@ fixes use a `fix:` title plus the `security` label and go under `Security`. Do *
 bump the version yourself; maintainers cut releases following
 [`RELEASING.md`](RELEASING.md).
 
-## Agent-authored PR review requirements
+## Pull request review and validation
 
-Maintainer/agent PRs use the review route in
-[AGENTS.md](AGENTS.md#development-workflow-cubrid-lab-org-standard).
-Non-trivial OpenCode work records Oracle design and post-implementation reviews;
-trivial OpenCode changes may omit those reviews with a recorded reason.
-Standalone Claude Code, Codex, ChatGPT or other agent tools wait for a substantive
-submitted GitHub Copilot review or a review by a maintainer (a code owner other
-than the PR's author), recorded on the PR (maintainer decision, 2026-10-15).
-Other people's reviews and other AI agents' reviews do not satisfy that route.
-A pending request, CI pass, self-review or an automated approval suggestion
-alone does not complete it. Under every route, changes to `safety.py`,
-`database.py`, `audit.py`, `server.py` or workflows that hold write permissions
-or perform releases need a review that explicitly assesses their invariants,
-confirmed by a maintainer.
-Record dispositions at the final relevant head and close inline threads only
-after verification. Human contributions follow ordinary contributor review;
-no contributor must install internal agent or Oracle tooling. Existing safety,
-integration and release checks remain mandatory.
+The same process applies to every contributor and every implementation tool,
+including OpenCode, Codex, Claude Code, ChatGPT, Copilot and human-only work.
+Local checks are encouraged but the required GitHub Actions checks on the
+final PR head are authoritative. Oracle, Copilot and `agent-review` are
+optional advisory reviews, not required evidence. Maintainers evaluate
+behavior, correctness, security, tests and maintainability, disposition
+findings and make the final merge decision.
+
+Changes to `safety.py`, `database.py`, `audit.py`, `server.py`,
+write-capable workflows or releases require a documented security/invariant
+assessment and the independent maintainer review specified in `AGENTS.md`
+for security-sensitive or publishing paths. This is a **human safety decision**,
+not a required Oracle/Copilot/agent-review stage or a change to GitHub branch
+protection settings. Existing tests, live CUBRID checks and release safeguards
+remain authoritative.
 
 ### Agent-review evidence gate
 
-> **Advisory only. Never make `agent-review` a required status check in its
-> current form.** It is a GitHub Actions check, and a pull request can publish a
-> passing check with the same name: by editing `agent-review.yml` (GitHub runs
-> the PR's copy of the workflow) or by adding another workflow with an
-> `agent-review` job. The check cannot prove who produced it. It can become a
-> required check only once its verdict is posted from an identity a pull request
-> cannot impersonate, such as a GitHub App (tracked in its own issue). Until
-> then it is a reading aid for the reviewer and the maintainer who merges.
-
-`.github/workflows/agent-review.yml` publishes the `agent-review` check. It runs
-`scripts/agent_review_gate.py` from the base branch and decides only from the
-review records GitHub keeps for the pull request. It applies the review route
-of 2026-10-15: a substantive Copilot review or a maintainer's review. The PR
-body, its checkboxes and its declared development route, review requests, and CI
-results are never evidence; the route is only shown in the check summary. Every
-pull request is evaluated the same way, whichever tool or person wrote it, except
-the two exemptions below.
-
-A review counts only when it is submitted (not pending or dismissed), comes from
-an account that still exists, is not a self-review (the reviewer is not the PR
-author and authored no commit in the PR other than a merge commit that only
-brings in `main`), covers the current head, and comes from GitHub Copilot code
-review or a maintainer: a code owner listed in `MAINTAINERS`, which a test keeps
-equal to `.github/CODEOWNERS`. Other people, other bots and other AI agents are
-listed in the summary but never count.
-
-| Evidence at the head | Ordinary change | Protected path changed |
-|---|---|---|
-| Maintainer, `APPROVED` | passes | passes (the explicit authorization) |
-| Maintainer, `COMMENTED` that opens at least one inline thread | passes | not enough |
-| Maintainer, `COMMENTED` with body text only | not enough | not enough |
-| Copilot `COMMENTED`, substantive, AI round 1 or 2 | passes | not enough |
-| Copilot past the AI review budget, summary-only, or error/quota notice | not enough | not enough |
-| Nothing, a pending request, PR-body checkboxes, a self-review, anyone else | fails | fails |
-
-- **COMMENTED is not APPROVED.** A maintainer's `COMMENTED` review counts as an
-  assessment only when it opens an inline thread; the gate cannot judge body
-  text, so a maintainer who accepts a change without comments approves it.
-- **Substantive Copilot review.** It has inline comments, or its overview states
-  a verdict, an assessment sentence and an open-findings count. A summary of what
-  changed, or an error or quota notice, is not an assessment. A notice is not an
-  AI review round, so a quota failure may be re-requested; neither is an empty
-  record with no new thread, such as a reply to an existing thread.
-- **Stale reviews.** A review of an older commit counts only when the PR's change
-  against `main` is identical at that commit and at the head: the same files,
-  statuses and exact patches, hunk line numbers included, and for a file without
-  a patch (binary, too large, or a pure rename) the same blob SHA. An edit moved
-  to another place never inherits a review. An "Update branch" sync, needed
-  because `main` requires branches to be up to date, or a rebase that changes
-  nothing of the PR carries the review forward. When `main` changed lines above
-  or next to the PR's own change, the patch differs and the review is stale, and
-  the merge commit's author counts as a committer: fail closed, and ask for a new
-  review of the final head.
-- **AI review budget.** Each published Copilot review is one round, stale or not
-  (error and quota notices excepted). Rounds 1 and 2 can satisfy the gate. A
-  Copilot review does not count on its own once a PR has more than two Copilot
-  rounds, even an earlier round of the same head: at the budget limit the final
-  head needs a maintainer's review. A carry-forward spends no round.
-- **Protected paths (no bypass).** A change to `cubrid_mcp_server/safety.py`,
-  `database.py`, `audit.py`, `server.py`, `config.py`, `__main__.py` or
-  `context.py`, to any file under `.github/workflows/`, or to the gate itself
-  (`scripts/agent_review_gate.py`, `tests/test_agent_review_gate.py`) needs a
-  maintainer's `APPROVED` review of the head.
-- **Blocking findings.** A maintainer whose latest decision is
-  `CHANGES_REQUESTED` blocks, even one who also committed to the PR. Only threads
-  opened by Copilot or a maintainer are weighed. Among them, an unresolved
-  Copilot critical or high-severity finding, or a thread whose comments (replies
-  included) mention security, a vulnerability, an injection, credentials,
-  secrets, privileges or a bypass, blocks even when outdated, and so does such a
-  thread that the PR author resolved. Resolving a thread sends no workflow
-  event: re-run the `agent-review` job afterwards.
-- **Missing data fails closed.** Any API error, missing field or truncated
-  listing (250 or more commits, 3000 or more files, a compare of 300 or more
-  files) fails the check; re-run it. A review whose account was deleted is
-  ignored instead.
-- **Copilot's review does not start a run by itself.** GitHub holds a workflow
-  run that Copilot's review event triggers as "action required" and creates no
-  check for it. After Copilot reviews, re-run that waiting `agent-review` run
-  (Actions, or `gh api -X POST repos/cubrid-lab/cubrid-mcp-server/actions/runs/<id>/rerun`)
-  or edit the PR body; both evaluate the current records. Each event adds
-  another `agent-review` check run on the same head. GitHub does not document
-  which of several same-named check runs a required check would use, which is a
-  second reason the check stays advisory: read the newest run.
-
-Exemptions, so release and dependency automation behave as before:
-
-- **release-please candidates** (author `github-actions[bot]`, a
-  `release-please--` branch in this repository) pass with a notice only when
-  every changed file is one release-please writes here (`CHANGELOG.md`,
-  `RELEASE_CHANGELOG.md`, `.release-please-manifest.json`, `.mcpb/server.json`,
-  `cubrid_mcp_server/__init__.py`) and no protected path is touched. Otherwise
-  they are evaluated like any pull request. Their review, freeze and CI rules
-  stay in [`RELEASING.md`](RELEASING.md).
-- **Dependabot updates** (author `dependabot[bot]`, a `dependabot/` branch in this
-  repository) pass when every commit was created by Dependabot through GitHub
-  (author `dependabot[bot]`, committer `web-flow`, verified signature) or is a
-  merge that leaves the PR's change identical. Any other commit, an amended
-  Dependabot commit included, makes the pull request an ordinary one.
-
-Outside contributors' pull requests pass with a maintainer's review. A
-maintainer's own pull request needs Copilot code review or the other maintainer.
-
-**Fork pull requests.** The workflow uses `pull_request` and
-`pull_request_review` with a read-only token, never `pull_request_target`, and
-checks out nothing: no fork code runs with write access or secrets. Fork pull
-requests never get an exemption and never run their own copy of the script.
-`pull_request_target` would read the workflow from the base branch, but it runs
-with the repository's secrets and, unless every job narrows it, a write-capable
-token next to attacker-controlled input, and review events do not trigger it. A
-`workflow_run` relay would need a status-writing token, loses the PR number for
-forks, and its status context can still be posted by a same-repository PR. A
-first-time fork contributor's runs wait for a maintainer's approval as usual.
+The existing `agent-review` check can summarize submitted GitHub review
+records using legacy tool-based classifications. It is **not a merge gate**
+and its result is not an authoritative assessment of reviewer approval,
+source correctness or readiness to merge. Reviewers may read useful
+findings but make independent judgments; the owner/maintainer validates
+required CI, security findings and final source. Do not protect this check
+name as a required status: a pull request can spoof a similarly named
+GitHub Actions check. First-time fork workflow approvals remain a GitHub
+Actions safety control, not a contributor review requirement.
 
 ## Repository-local issue ownership
 
@@ -446,10 +549,11 @@ Existing security invariants, tests, docs requirements and PR review/merge polic
 
 ## Pull request and commit titles
 
-This rule covers issue titles, pull request titles and commit subjects in every
-cubrid-lab repository. Pull requests are squash-merged and the pull request
-title becomes the commit title on `main`, so the pull request title is the one
-that must be right. The `PR title` check enforces it.
+This repository uses the canonical CUBRID Lab title format for its issues,
+pull requests and commit subjects. Its PRs are squash-merged and the pull
+request title becomes the commit title on `main`, so the PR title must be
+accurate. This repository's `PR title` check enforces that format; do not
+assume other repositories share identical check names or release mechanics.
 
 ```text
 type: description

@@ -8,11 +8,15 @@ Tiers:
 
 * ``docs``  - docs/metadata-only PR: no unit job, no live CUBRID, changelog lint only.
 * ``pr``    - ordinary PR: representative Python unit lane, plus risk-selected lanes
-  (one default live CUBRID lane for runtime/test changes, lowest-direct for
+  (one default live CUBRID lane for runtime/test changes and for the Makefile and
+  ``scripts/run_integration.py`` that run it, lowest-direct for
   dependency metadata, Python/CUBRID endpoints for compatibility changes).
   Workflow edits other than ``ci.yml`` select the unit lane only (#232).
 * ``full``  - push to main, manual dispatch, or a change to the CI policy itself:
-  Python endpoints, both primary CUBRID endpoints and lowest-direct.
+  Python endpoints, both primary CUBRID endpoints and lowest-direct. A push to main
+  keeps the Python endpoints and lowest-direct but runs only the representative
+  CUBRID 11.4 lane (#417): its PR already ran 11.2 when its paths needed it, and
+  the weekly and release ``integration-full.yml`` matrix covers every version.
 
 Unknown paths fail closed: they select the unit lane and the default live lane.
 """
@@ -43,6 +47,10 @@ LIVE_ENDPOINTS = (
 )
 # Runtime and tests: unit plus one default live CUBRID lane.
 RUNTIME = ("cubrid_mcp_server/*", "tests/*")
+# The live lane runs `make integration`, implemented by the Makefile recipe and
+# its runner, so a change to either must start CUBRID too (#381). Checked before
+# TOOLING, which would otherwise match both.
+LIVE_TOOLING = ("Makefile", "scripts/run_integration.py")
 # Tooling and metadata exercised by unit tests only; never starts CUBRID.
 TOOLING = (
     "scripts/*",
@@ -73,6 +81,9 @@ TOOLING = (
 DOCS = ("*.md", "docs/*", "LICENSE", "NOTICE", "llms.txt")
 
 FULL_EVENTS = {"push", "workflow_dispatch", "schedule"}
+# Full-tier events that run only DEFAULT_CUBRID live (#417). Every other event,
+# including an unknown one, keeps both CUBRID endpoints.
+REPRESENTATIVE_CUBRID_EVENTS = {"push"}
 
 
 def _match(path: str, patterns: Iterable[str]) -> bool:
@@ -97,7 +108,7 @@ def classify(event: str, paths: Iterable[str]) -> dict[str, object]:
             unit = lowest = live = py_endpoints = cubrid_endpoints = True
         elif _match(path, LIVE_ENDPOINTS):
             unit = live = cubrid_endpoints = True
-        elif _match(path, RUNTIME):
+        elif _match(path, RUNTIME) or _match(path, LIVE_TOOLING):
             unit = live = True
         elif _match(path, TOOLING):
             unit = True
@@ -108,6 +119,8 @@ def classify(event: str, paths: Iterable[str]) -> dict[str, object]:
 
     if full:
         unit = lowest = live = py_endpoints = cubrid_endpoints = True
+        if event in REPRESENTATIVE_CUBRID_EVENTS:
+            cubrid_endpoints = False
 
     if full:
         tier = "full"

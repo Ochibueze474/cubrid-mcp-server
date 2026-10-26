@@ -82,6 +82,21 @@ def test_filter_table_names(fake_db: FakeDatabase) -> None:
     assert server.filter_table_names("user") == ["users", "user_roles"]
 
 
+def test_filter_table_names_accepts_mixed_case_and_padded_substrings(
+    fake_db: FakeDatabase,
+) -> None:
+    # #292: the search is case-insensitive and the substring is stripped, so
+    # caller text in another case or padded with spaces and tab/newline still
+    # matches the same catalog entries.
+    padded = chr(9) + "user" + chr(10)
+    for substring in ("USER", "  user ", padded):
+        fake_db.queue([("users",), ("orders",), ("user_roles",)])
+        assert server.filter_table_names(substring) == ["users", "user_roles"]
+    # Stripping must not turn a present table into a broader match.
+    fake_db.queue([("users",), ("orders",)])
+    assert server.filter_table_names(" USERS ") == ["users"]
+
+
 def test_filter_table_names_no_match(fake_db: FakeDatabase) -> None:
     fake_db.queue([("users",), ("orders",)])
     assert server.filter_table_names("absent") == []
@@ -385,6 +400,36 @@ def test_table_row_counts_explicit(fake_db: FakeDatabase) -> None:
     }
 
 
+def test_table_row_counts_matches_names_but_quotes_the_canonical_one(
+    fake_db: FakeDatabase,
+) -> None:
+    # #292: lookup accepts mixed case and padding, but the emitted COUNT(*) is
+    # built from the catalog's canonical name, never from the caller's text.
+    fake_db.queue([("users",), ("orders",)])
+    fake_db.queue([(42,)])
+    fake_db.queue([(7,)])
+    result = server.table_row_counts([" USERS ", "Orders"])
+    assert result["tables"] == [
+        {"table": "users", "row_count": 42},
+        {"table": "orders", "row_count": 7},
+    ]
+    assert [sql for sql, _ in fake_db.calls[1:]] == [
+        'SELECT COUNT(*) FROM "users"',
+        'SELECT COUNT(*) FROM "orders"',
+    ]
+    # A padded name that matches nothing still fails closed: the caller's text
+    # is echoed in the result and no statement is built from it at all.
+    fake_db.queue([("users",), ("orders",)])
+    calls_before = len(fake_db.calls)
+    padded_missing = chr(9) + "MISSING "
+    missing = server.table_row_counts([padded_missing])
+    assert missing["tables"] == [
+        {"table": padded_missing, "row_count": None, "error": "unknown table"}
+    ]
+    # Only the catalog read was issued — no COUNT(*) built from that text.
+    assert len(fake_db.calls) == calls_before + 1
+
+
 def test_table_row_counts_rejects_unknown_table(fake_db: FakeDatabase) -> None:
     fake_db.queue([("users",)])
     result = server.table_row_counts(["evil; DROP TABLE x"])
@@ -445,6 +490,16 @@ def test_list_serials(fake_db: FakeDatabase) -> None:
     assert result[0]["current_value"] == 100
     assert result[0]["started"] is True
     assert result[0]["cyclic"] is False
+
+
+def test_list_serials_empty_catalog_returns_empty_list(fake_db: FakeDatabase) -> None:
+    fake_db.queue([])
+    assert server.list_serials() == []
+    # Exactly one catalog read and nothing after it: an empty db_serial result
+    # must not raise and must not trigger a follow-up metadata query.
+    assert len(fake_db.calls) == 1
+    assert "FROM db_serial" in fake_db.calls[0][0]
+    assert fake_db.responses == []
 
 
 def test_list_class_hierarchy_all(fake_db: FakeDatabase) -> None:
@@ -1456,3 +1511,13 @@ def test_explain_query_audits_the_truncated_flag(
     (record,) = [json.loads(line) for line in buf.getvalue().splitlines()]
     assert record["tool"] == "explain_query"
     assert record["truncated"] is truncated
+
+
+def test_audit_raises_runtime_error_when_no_audit_logger(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _NoAuditContext:
+        def audit_for(self, connection: str | None = None) -> None:
+            return None
+
+    monkeypatch.setattr(server, "_get_context", lambda: _NoAuditContext())
+    with pytest.raises(RuntimeError, match=r"audit_for\(\) returned no audit logger"):
+        server._audit()

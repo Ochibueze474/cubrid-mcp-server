@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib.util
 import re
 import tomllib
+from email.message import Message
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,9 @@ from packaging.utils import canonicalize_name
 
 ROOT = Path(__file__).resolve().parents[1]
 DOC = (ROOT / "THIRD_PARTY_LICENSES.md").read_text(encoding="utf-8")
-PROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+_PYPROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+PROJECT = _PYPROJECT["project"]
+DEPENDENCY_GROUPS = _PYPROJECT["dependency-groups"]
 
 _spec = importlib.util.spec_from_file_location(
     "_generate_third_party_licenses", ROOT / "scripts" / "generate_third_party_licenses.py"
@@ -33,8 +36,17 @@ _spec.loader.exec_module(generator)
 
 SECTIONS = {
     "runtime": "## Runtime dependencies",
-    "dev": "## Development / test dependencies: `.[dev]` additions",
+    "dev": "## Development / test dependencies: `dev` group additions",
 }
+
+
+class StubDistribution:
+    """Minimal distribution carrying repeatable metadata fields."""
+
+    def __init__(self, fields: list[tuple[str, str]]) -> None:
+        self.metadata = Message()
+        for key, value in fields:
+            self.metadata[key] = value
 
 
 def section(heading: str) -> str:
@@ -59,9 +71,7 @@ def table(scope: str) -> dict[str, dict[str, str]]:
 
 
 def requirements(scope: str) -> list[Requirement]:
-    declared = (
-        PROJECT["dependencies"] if scope == "runtime" else PROJECT["optional-dependencies"][scope]
-    )
+    declared = PROJECT["dependencies"] if scope == "runtime" else DEPENDENCY_GROUPS[scope]
     return [Requirement(req) for req in declared]
 
 
@@ -124,6 +134,64 @@ def test_every_category_matches_the_generator(scope: str) -> None:
         assert generator.category(row["license"]) == row["category"], (name, row)
 
 
+@pytest.mark.parametrize(
+    ("license_text", "expected"),
+    [
+        pytest.param("MIT", "Permissive", id="mit"),
+        pytest.param(
+            "MIT AND (Apache-2.0 OR BSD-3-Clause)",
+            "Permissive",
+            id="compound-permissive",
+        ),
+        pytest.param("BSD License / MIT License", "Permissive", id="classifier-list"),
+        pytest.param("MPL-2.0", "Weak copyleft (MPL)", id="mpl"),
+        pytest.param("MIT AND MPL-2.0", "Weak copyleft (MPL)", id="compound-mpl"),
+        pytest.param("GPLv3", "Needs review", id="gpl"),
+        pytest.param("LGPLv2+", "Needs review", id="lgpl"),
+        pytest.param("Apache-2.0 WITH LLVM-exception", "Needs review", id="exception"),
+        pytest.param("MIT-CMU", "Needs review", id="unknown-mit-variant"),
+        pytest.param("UNKNOWN", "Needs review", id="unknown"),
+        pytest.param("", "Needs review", id="empty"),
+    ],
+)
+def test_license_categories_are_classified_conservatively(license_text: str, expected: str) -> None:
+    assert generator.category(license_text) == expected
+
+
+@pytest.mark.parametrize(
+    ("fields", "expected"),
+    [
+        pytest.param(
+            [
+                ("License-Expression", "MIT"),
+                ("Classifier", "License :: OSI Approved :: BSD License"),
+                ("License", "Foo"),
+            ],
+            "MIT",
+            id="expression-first",
+        ),
+        pytest.param(
+            [
+                ("Classifier", "License :: OSI Approved"),
+                ("Classifier", "License :: OSI Approved :: MIT License"),
+                ("Classifier", "License :: OSI Approved :: MIT License"),
+                ("Classifier", "License :: OSI Approved :: BSD License"),
+                ("Classifier", "Programming Language :: Python :: 3"),
+            ],
+            "BSD License / MIT License",
+            id="sorted-deduplicated-classifiers",
+        ),
+        pytest.param([("License", "Custom Terms")], "Custom Terms", id="license-field"),
+        pytest.param([("License", "x" * 60)], "x" * 60, id="license-field-max-length"),
+        pytest.param([("License", "line one\nline two")], "UNKNOWN", id="multiline-license"),
+        pytest.param([("License", "x" * 61)], "UNKNOWN", id="long-license"),
+        pytest.param([], "UNKNOWN", id="missing-license"),
+    ],
+)
+def test_license_metadata_fallbacks(fields: list[tuple[str, str]], expected: str) -> None:
+    assert generator.license_of(StubDistribution(fields)) == expected
+
+
 def test_every_runtime_dependency_is_permissive() -> None:
     # The prose states it; keep it true or make the prose change with the table.
     assert {row["category"] for row in table("runtime").values()} == {"Permissive"}
@@ -154,4 +222,4 @@ def test_generation_inputs_are_recorded() -> None:
     assert re.search(r"CPython 3\.\d+\.\d+ on Linux", record)
     assert "scripts/generate_third_party_licenses.py" in record
     assert "--exclude cubrid-mcp-server --required-by" in record
-    assert '".[dev]"' in record
+    assert "pip install -p /tmp/tpl-dev/bin/python . --group dev" in record

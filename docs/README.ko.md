@@ -1,6 +1,6 @@
 <!-- CUBRID-LAB-ICON:START -->
 <p align="center">
-  <a href="https://github.com/cubrid-lab/brand"><img src="https://raw.githubusercontent.com/cubrid-lab/brand/94e2bf6b915d7ef6a1111e06376f693f70bf6c4e/dist/icons/cubrid-mcp-server.svg" alt="cubrid-mcp-server icon (CUBRID Lab brand repository)" width="120"></a>
+  <a href="https://github.com/cubrid-lab/brand"><img src="https://raw.githubusercontent.com/cubrid-lab/brand/8aa81b79f00ae936b03a9546f14f514c5e2554a7/dist/icons/cubrid-mcp-server.svg" alt="cubrid-mcp-server icon (CUBRID Lab brand repository)" width="120"></a>
 </p>
 <!-- CUBRID-LAB-ICON:END -->
 
@@ -95,7 +95,10 @@ export CUBRID_DATABASE=mydb
 | `CUBRID_MCP_MAX_ROWS` | `1000` | `execute_query` 최대 행 수 (초과 시 잘림) |
 | `CUBRID_MCP_MAX_SQL_LENGTH` | `65536` | 제출 가능한 SQL 최대 길이 (글자 수) |
 | `CUBRID_MCP_QUERY_TIMEOUT` | `30` | 문장별 소켓 읽기 타임아웃 (초). 서버가 이 시간 내에 데이터를 보내지 않으면 쿼리가 중단되고 연결이 재설정됩니다. 서버 측 문장 타임아웃이 아닙니다. |
-| `CUBRID_MCP_AUDIT_LOG` | `0` | 옵트인 감사 로그. 활성화 시 실행된 문장마다 재던션-safe JSON 기록을 **stderr**에 출력 (연결별 적용: `CUBRID_<NAME>_MCP_AUDIT_LOG`) |
+| `CUBRID_MCP_CONNECT_TIMEOUT` | `10` | CUBRID 브로커 연결 타임아웃 (초, 양수). 느리거나 먼 브로커에는 늘리세요. |
+| `CUBRID_MCP_MAX_ROW_COUNT_TABLES` | `50` | `table_row_counts`가 한 번에 카운트하는 최대 테이블 수: 인자 없는 호출은 처음 N개 사용자 테이블을 카운트하고, 이보다 긴 명시적 리스트는 거부됩니다 |
+| `CUBRID_MCP_MAX_INLINE_BINARY_BYTES` | `256` | 이 바이트 수 이하의 바이너리 값은 base64로 반환되고, 더 크면 `<binary N bytes>`로 요약됩니다. `0`이면 비어 있지 않은 모든 바이너리 값을 요약합니다. |
+| `CUBRID_MCP_AUDIT_LOG` | `0` | 옵트인 감사 로그. 활성화 시 실행된 문장마다 민감정보가 제거된(redaction-safe) JSON 기록을 **stderr**에 출력 (연결별 적용: `CUBRID_<NAME>_MCP_AUDIT_LOG`) |
 | `CUBRID_MCP_WRITE` | `0` | 옵트인 쓰기 모드. `1`로 설정하면 단일 DML용 `execute_write` 도구가 등록됩니다 (연결별 적용: `CUBRID_<NAME>_MCP_WRITE`). 기본은 꺼짐 |
 
 ### 다중 연결
@@ -231,7 +234,7 @@ cubrid-mcp-server
 
 ## 로깅
 
-서버는 MCP **stdio 전송**을 사용하며 `stdout`은 JSON-RPC 프로토콜 스트림으로 예약됩니다. **모든 로그는 `stderr`로 출력**되며, 로그 레벨 기본값은 `INFO`입니다. LLM 클라이언트에 반환되는 오류는 **재던션 처리**됩니다 — 예외 카테고리(예: `query failed: OperationalError`)만 반환되고 전체 세부 정보는 운영자를 위해 stderr에 기록됩니다. 스키마 세부 사항, 호스트명, SQL 조각, 설정 값이 클라이언트에 노출되지 않습니다.
+서버는 MCP **stdio 전송**을 사용하며 `stdout`은 JSON-RPC 프로토콜 스트림으로 예약됩니다. **모든 로그는 `stderr`로 출력**되며, 로그 레벨 기본값은 `INFO`입니다. LLM 클라이언트에 반환되는 오류는 **민감정보 제거(redaction) 처리**됩니다 — 예외 카테고리(예: `query failed: OperationalError`)만 반환되고 전체 세부 정보는 운영자를 위해 stderr에 기록됩니다. 스키마 세부 사항, 호스트명, SQL 조각, 설정 값이 클라이언트에 노출되지 않습니다.
 
 ### 감사 로깅 (옵트인)
 
@@ -256,19 +259,30 @@ cubrid-mcp-server
 git clone https://github.com/cubrid-lab/cubrid-mcp-server.git
 cd cubrid-mcp-server
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+python -m pip install --upgrade pip   # dev 그룹은 pip >= 25.1이 필요합니다
+make install        # python -m pip install -e . --group dev
+make doctor         # 필요한 도구 확인
 
-# 린트 및 타입 검사
-ruff check .
-mypy cubrid_mcp_server
+# 린트, 포맷 검사 및 타입 검사 (ruff check ., ruff format --check ., mypy)
+make check
 
-# 단위 테스트
-pytest -m "not integration"
+# 95% 커버리지 하한을 적용한 단위 테스트 (데이터베이스 불필요)
+make test
 
-# 통합 테스트 (실행 중인 CUBRID 필요)
+# make가 시작하고 항상 제거하는 실행 전용 Compose CUBRID에서 통합 테스트
+make integration    # 기본값 CUBRID_VERSION=11.4 CUBRID_TEST_PORT=33000
+
+# 이미 실행 중인 CUBRID에서 통합 테스트
 export CUBRID_HOST=localhost CUBRID_USER=dba CUBRID_PASSWORD="" CUBRID_DATABASE=demodb
-pytest -m integration
+make integration-local
+
+# 수동 작업용 영속 로컬 CUBRID (docker-compose.yml); make integration은 이 프로젝트를 건드리지 않습니다
+make docker-up      # 127.0.0.1:33000의 demodb (CUBRID_VERSION, CUBRID_TEST_PORT)
+make docker-down    # 데이터 볼륨은 유지합니다. make docker-clean은 볼륨을 삭제합니다
 ```
+
+CI도 같은 Make 타깃을 호출합니다. `make help`로 전체 목록을 볼 수 있고, 각 타깃은
+[CONTRIBUTING.md](https://github.com/cubrid-lab/cubrid-mcp-server/blob/main/CONTRIBUTING.md)에 설명되어 있습니다.
 
 실제 서버를 사용하는 공유 세션 동시 호출 회귀 테스트만 실행할 수도 있습니다:
 

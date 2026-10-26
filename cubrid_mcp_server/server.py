@@ -41,13 +41,6 @@ mcp = FastMCP(
     version=__version__,
 )
 
-# Cap on how many tables ``table_row_counts`` will scan in a single call, to avoid
-# accidentally issuing hundreds of COUNT(*) queries against a large database.
-_MAX_ROW_COUNT_TABLES = 50
-
-# Binary values up to this size are returned base64-encoded; larger blobs are summarized.
-_MAX_INLINE_BINARY_BYTES = 256
-
 _context: AppContext | None = None
 _context_lock = threading.Lock()
 
@@ -77,7 +70,8 @@ def _cfg(connection: str | None = None) -> Config:
 
 def _audit(connection: str | None = None) -> AuditLogger:
     audit = _get_context().audit_for(connection)
-    assert audit is not None  # AppContext.__post_init__ always populates this
+    if audit is None:
+        raise RuntimeError("AppContext.audit_for() returned no audit logger")
     return audit
 
 
@@ -193,6 +187,13 @@ def filter_table_names(substring: str, connection: str | None = None) -> list[st
 
 
 def _schema_definitions(table: _Table, connection: str | None = None) -> list[dict[str, Any]]:
+    """Column metadata for an already-resolved ``table``, in definition order.
+
+    Each column carries its name, type, nullability, default and whether it is
+    part of the primary key. The table is selected by owner and name (see
+    :func:`_owner_filter`), so same-named tables of different owners on 11.2 and
+    later never mix; the values are bound parameters.
+    """
     # The conditions come from _owner_filter (fixed column names); values are bound.
     attr_filter, params = _owner_filter(table, "a")
     rows = _db(connection).fetch_all(
@@ -264,6 +265,13 @@ def _describe_table(resolved: _Table, connection: str | None = None) -> dict[str
 
 
 def _list_indexes(table: _Table, connection: str | None = None) -> list[dict[str, Any]]:
+    """Indexes of an already-resolved ``table`` with their key columns and flags.
+
+    One entry per index, in index-name order, with its key columns in key order.
+    The table is selected by owner and name (see :func:`_owner_filter`), and the
+    key rows are joined on the owner too (:func:`_same_owner`), so a same-named
+    index of another owner's table is not merged in.
+    """
     index_filter, params = _owner_filter(table, "i")
     rows = _db(connection).fetch_all(
         f"""
@@ -359,21 +367,23 @@ def table_row_counts(
     When ``table_names`` is omitted or ``None``, counts the first 50 user tables in
     name order; ``truncated`` is true when the database has more, and ``total_tables``
     is the number of user tables. An explicit list of more than 50 names is rejected.
+    The limit of 50 is the default of ``CUBRID_MCP_MAX_ROW_COUNT_TABLES``.
     Passing an empty list (``table_names=[]``) requests zero tables.
     """
+    # Caps how many COUNT(*) queries one call issues against a large database.
+    limit = _cfg(connection).max_row_count_tables
     known = _user_tables(connection)
     truncated = False
     if table_names is None:
         targets = sorted(table.display for table in known)
-        if len(targets) > _MAX_ROW_COUNT_TABLES:
-            targets = targets[:_MAX_ROW_COUNT_TABLES]
+        if len(targets) > limit:
+            targets = targets[:limit]
             truncated = True
     else:
         targets = table_names
-        if len(targets) > _MAX_ROW_COUNT_TABLES:
+        if len(targets) > limit:
             raise ValueError(
-                f"too many tables requested ({len(targets)}); "
-                f"limit is {_MAX_ROW_COUNT_TABLES} per call"
+                f"too many tables requested ({len(targets)}); limit is {limit} per call"
             )
     results: list[dict[str, Any]] = []
     for name in targets:
@@ -501,7 +511,7 @@ def execute_query(sql: str, connection: str | None = None) -> dict[str, Any]:
             ensure_query_statement(sql)
 
         rows, row_truncated = db.fetch_many(sql, None, config.max_rows)
-        rendered = _render_rows(rows, config.max_chars)
+        rendered = _render_rows(rows, config.max_chars, config.max_inline_binary_bytes)
         outcome.row_count = len(rendered["rows"])
         outcome.truncated = bool(rendered["truncated"] or row_truncated)
         return {
@@ -626,7 +636,9 @@ def schema_resource(table: str) -> str:
     return json.dumps(_describe_table(_resolve_table(table)))
 
 
-def _render_rows(rows: list[tuple[Any, ...]], max_chars: int) -> dict[str, Any]:
+def _render_rows(
+    rows: list[tuple[Any, ...]], max_chars: int, max_inline_binary_bytes: int = 256
+) -> dict[str, Any]:
     """Render ``rows`` within a budget of ``max_chars`` characters.
 
     A value counts as ``len(str(value))`` (``None`` counts 4), and the budget
@@ -638,7 +650,7 @@ def _render_rows(rows: list[tuple[Any, ...]], max_chars: int) -> dict[str, Any]:
     output: list[list[Any]] = []
     used = 0
     for row in rows:
-        values = [_coerce(value) for value in row]
+        values = [_coerce(value, max_inline_binary_bytes) for value in row]
         size = sum(len(str(value)) for value in values)
         if used + size > max_chars:
             if not output:
@@ -675,12 +687,17 @@ def _fit_row(values: list[Any], budget: int) -> list[Any]:
     return fitted
 
 
-def _coerce(value: Any) -> Any:
+def _coerce(value: Any, max_inline_binary_bytes: int = 256) -> Any:
+    """Make ``value`` JSON-friendly.
+
+    Binary values up to ``max_inline_binary_bytes`` (``CUBRID_MCP_MAX_INLINE_BINARY_BYTES``)
+    are returned base64-encoded; larger ones are summarized by their size.
+    """
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, (bytes, bytearray)):
         data = bytes(value)
-        if len(data) <= _MAX_INLINE_BINARY_BYTES:
+        if len(data) <= max_inline_binary_bytes:
             return base64.b64encode(data).decode("ascii")
         return f"<binary {len(data)} bytes>"
     return str(value)
@@ -1229,7 +1246,8 @@ def explore_unknown_db() -> str:
         "Phase 1 — Discovery:\n"
         "1. Use `all_table_names` to get a complete table inventory\n"
         "2. Use `table_row_counts` to understand data volume (with no arguments it counts\n"
-        "   the first 50 tables; if `truncated` is true, pass the remaining names in batches)\n"
+        "   the first 50 tables by default; if `truncated` is true, pass the remaining names\n"
+        "   in batches)\n"
         "3. Use `list_class_hierarchy` to find table inheritance\n\n"
         "Phase 2 — Structure:\n"
         "4. For each important table, use `describe_table` to see columns, PK, and indexes\n"

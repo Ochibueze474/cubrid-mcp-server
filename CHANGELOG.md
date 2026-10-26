@@ -7,6 +7,194 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Configurable connect timeout and server output limits (#430)** — three values that were
+  hardcoded can now be set per deployment: `CUBRID_MCP_CONNECT_TIMEOUT` (seconds for opening
+  a broker connection, positive finite number, default `10`),
+  `CUBRID_MCP_MAX_ROW_COUNT_TABLES` (tables `table_row_counts` counts in one call, positive
+  integer, default `50`) and `CUBRID_MCP_MAX_INLINE_BINARY_BYTES` (largest binary value
+  returned inline as base64, non-negative integer, default `256`; `0` summarizes every
+  non-empty binary value). Each also has a per-connection `CUBRID_<NAME>_MCP_*` form and an
+  invalid value fails at startup with an error naming the variable. Without them the
+  behavior is unchanged. README (EN/KO), `TOOLS.md`, `MULTI_CONNECTION.md` and
+  `TROUBLESHOOTING.md` (EN/KO) and the `.mcpb/server.json` manifest list them.
+
+### Documentation
+
+- **README and docs site show the 2026-10-25 brand icon (#456)** — the icon URL pinned in the README, its translations and `mkdocs.yml` (logo and favicon) now points at the approved CUBRID Lab brand revision `8aa81b7`. Documentation only; behavior is unchanged.
+
+### CI
+
+- **Fewer routine CUBRID version runs, full release coverage kept (#417)** — a push to
+  `main` now runs live integration on CUBRID 11.4 only (it also ran 11.2); its Python
+  3.11/3.12/3.14 unit lanes and `lowest-direct` are unchanged. `integration-full.yml`
+  drops its Monday–Saturday two-corner schedule and keeps the weekly Sunday 4 × 4
+  matrix; manual dispatch and the release `workflow_call` from `publish-pypi.yml` still
+  run all 16 cells and gate publication as before. PR selection is unchanged. Each
+  matrix cell now records the image digest and engine version it ran, and a new
+  advisory weekly job (`scripts/latest_server.py`) checks whether `cubrid/cubrid:latest`
+  is the same image as `11.4`, runs a focused canary only on a newer engine build, and
+  reports a failed lookup as unverified. No supported CUBRID version changes.
+
+### Tests
+
+- **Live proof that the default configuration refuses writes (#451)** — the new
+  `integration`-marked `tests/test_integration_readonly.py` calls every SQL-accepting tool
+  through `mcp.call_tool` against the run-owned CUBRID, with no `CUBRID_MCP_READONLY`,
+  `CUBRID_MCP_WRITE` or `CUBRID_CONNECTIONS` set. `CREATE TABLE`, `INSERT`, `UPDATE`,
+  `DELETE`, `TRUNCATE`, `ALTER`, `DROP` (also behind a comment) and `SELECT 1; DROP ...`-style
+  multi-statement input fail with the documented `execute_query` and `explain_query` errors,
+  `execute_write` is not offered, and a table name carrying SQL is an unknown table for
+  `table_row_counts`; an independent session then shows the catalog, columns and rows
+  unchanged. One more test enables `CUBRID_MCP_WRITE=1`, commits an `INSERT` through
+  `execute_write` into a uniquely named table that it always drops, and shows DDL and
+  multi-statement input are still refused. Test-only; the server is unchanged.
+
+## [0.6.0] - 2026-10-25
+
+### Upgrade notes
+
+- **`make verify` now runs the live integration lane (#404)** — it runs `make check`, the offline
+  `make test` and then the run-owned `make integration` lane, so it needs Docker and fails when
+  CUBRID never becomes ready or every live test skips. The live lane starts only after the offline
+  tests pass, also under `make -j`. `make test` stays offline; run `make check test` for the
+  former offline-only `make verify`. Development tooling only; the MCP tools are unchanged.
+
+### Added
+
+- **`make verify` writes an aggregate summary (#449)** — `scripts/run_verify.py` now runs the
+  three phases and always writes `test-results/verify/summary.json` (overall `PASS`/`FAIL`/
+  `INCOMPLETE` and each phase's status, `NOT_RUN` when it never started, and exit code), copies of
+  the lanes' JUnit files under `junit/<lane>.xml` and the live `environment.json`, with the
+  configured connection passwords masked, also after a failure or a signal. A missing, unreadable
+  or non-string lane status, an all-skipped live lane or a file that cannot be copied is never
+  `PASS`. The first SIGINT, SIGTERM or SIGHUP is forwarded to the running phase and the run exits
+  128 + the signal number; `make integration` now `exec`s its runner, so a SIGTERM to make reaches
+  it, and the runner also cleans up on SIGHUP. New `scripts/report_results.py aggregate`
+  subcommand. Development tooling only; the MCP tools are unchanged.
+
+* **make:** run the live integration lane in make verify ([#447](https://github.com/cubrid-lab/cubrid-mcp-server/issues/447)) ([e694f56](https://github.com/cubrid-lab/cubrid-mcp-server/commit/e694f569cbbe62034a275a846b90bd8ed7e827f1))
+* **make:** write an aggregate verification summary under test-results/verify ([#450](https://github.com/cubrid-lab/cubrid-mcp-server/issues/450)) ([3260e38](https://github.com/cubrid-lab/cubrid-mcp-server/commit/3260e3810ec8ed1a285f3f84731ac96271ca9892)), refs [#449](https://github.com/cubrid-lab/cubrid-mcp-server/issues/449)
+
+### CI
+
+- **Every new issue starts in `status: needs triage` (#418)** — the issue forms add the
+  label and the new `issue-triage.yml` workflow adds it to every opened issue. Priority and
+  size are still set by a maintainer, who removes the label after triage.
+
+### Tests
+
+- **Named-connection invalid values keep the prefixed variable name (#434)** — `tests/test_config.py` now checks that an invalid `PORT`, `MCP_MAX_ROWS`, `MCP_MAX_CHARS`, `MCP_MAX_SQL_LENGTH` or `MCP_QUERY_TIMEOUT` on a named connection raises `ConfigError` naming the full `CUBRID_<NAME>_...` variable and not the bare default one, and that a blank required named variable is reported like a missing one. Test-only; `config.py` is unchanged. Refs #434.
+
+## [0.5.6] - 2026-10-25
+
+### Changed
+
+- **Invalid boolean settings name their variable (#435)** — `CUBRID_MCP_READONLY`, `CUBRID_MCP_WRITE` and `CUBRID_MCP_AUDIT_LOG` (and the `CUBRID_<NAME>_` forms for named connections) reported only `expected a boolean-like value, got 'x'`, so with several connections the operator had to guess which variable was wrong. The error now reads `<VARIABLE> must be a boolean (1/true/yes/on or 0/false/no/off), got 'x'`, matching the integer settings. Accepted aliases are unchanged, and `_parse_bool(value)` without a key keeps its old message. Refs #435.
+
+### Fixed
+
+* **config:** name the variable when a boolean setting is invalid ([#443](https://github.com/cubrid-lab/cubrid-mcp-server/issues/443)) ([8fc77db](https://github.com/cubrid-lab/cubrid-mcp-server/commit/8fc77db9e5379706dae95b1e85894be677f92df7)), refs [#435](https://github.com/cubrid-lab/cubrid-mcp-server/issues/435)
+
+### Documentation
+
+* **agents:** align independent MCP safety review and local title rules ([7592c53](https://github.com/cubrid-lab/cubrid-mcp-server/commit/7592c534b089882077f2b5da8345659aeb041d5c))
+* **agents:** clarify MCP safety review and local PR policy ([#442](https://github.com/cubrid-lab/cubrid-mcp-server/issues/442)) ([7592c53](https://github.com/cubrid-lab/cubrid-mcp-server/commit/7592c534b089882077f2b5da8345659aeb041d5c))
+
+## [0.5.5] - 2026-10-25
+
+### Fixed
+
+- **Audit logger invariants raise `RuntimeError` instead of asserting (#429)** — `AppContext.audit_for()` and `server._audit()` guarded the audit logger that `AppContext.__post_init__` always sets with `assert`, which `python -O` strips. Both now raise `RuntimeError` naming the missing field; behavior is unchanged while the invariant holds, so no tool output changes. Refs #429.
+
+- **Suppressed connection close failures are logged (#431)** — `AppContext.close()` re-raises only the first close failure and silently dropped any later one, hiding secondary shutdown problems. Each suppressed failure is now logged at WARNING through the module logger with the connection name and the exception type only (driver error text can echo connection details, so it is deliberately left out). The first error is still raised unchanged. Refs #431.
+
+* **context:** log suppressed connection close failures ([#439](https://github.com/cubrid-lab/cubrid-mcp-server/issues/439)) ([9924e2c](https://github.com/cubrid-lab/cubrid-mcp-server/commit/9924e2c94454eb0abda19776e23135d12acca381))
+* **context:** raise RuntimeError for unset audit loggers instead of asserting ([#438](https://github.com/cubrid-lab/cubrid-mcp-server/issues/438)) ([b6d8bb0](https://github.com/cubrid-lab/cubrid-mcp-server/commit/b6d8bb0e79022dc7a0df7282c87fae8784fdcf69))
+* **reporting:** redact credentials embedded in environment command metadata ([#433](https://github.com/cubrid-lab/cubrid-mcp-server/issues/433)) ([702aac6](https://github.com/cubrid-lab/cubrid-mcp-server/commit/702aac6f4b4c43a5b2abdaa36a4adfe645c0830a))
+
+### Security
+
+- **`environment.json` masks credentials embedded in the recorded command (#426)** — `scripts/report_results.py` stored the `--command` string, which `make integration` builds from its overridable `--pytest` value, verbatim, so a password assignment, an authenticated database URL or a token option in it would have reached the `test-results/integration/environment.json` CI artifact. It now masks the password of URL userinfo (`scheme://user:***@host`, percent-encoded passwords included) and the value of a `password`, `passwd`, `pwd`, `token`, `secret`, `api_key` or `apikey` assignment or option, case-insensitively and as a key suffix (`PASSWORD=***`, `CUBRID_PASSWORD=***`, `--password=***`, `--password ***`), and keeps every other byte of the command. The schema, statuses, exit codes and the arguments pytest receives are unchanged. The masking is a best-effort safety net with documented limits (for example `-p secret` is not recognized); `CONTRIBUTING.md` and the module docstring now say to supply secrets through environment variables or the CI secret store, not the command line. Refs #426.
+
+### Documentation
+
+- **The table-resolution and schema helpers in `server.py` are documented (#432)** — `_schema_definitions` and `_list_indexes` were the last of the private helpers behind the schema tools without a docstring; each now states what it returns and how the table is selected by owner and name. Docstrings only: no behavior, signature or tool output changes. Refs #432.
+
+* **server:** document the table-resolution and schema helper functions ([#440](https://github.com/cubrid-lab/cubrid-mcp-server/issues/440)) ([c645e6c](https://github.com/cubrid-lab/cubrid-mcp-server/commit/c645e6c6b272a8dadfa1f1113c07b9f7571422c5)), refs [#432](https://github.com/cubrid-lab/cubrid-mcp-server/issues/432)
+
+### CI
+
+- **The temporary `last-release-sha` override is removed after 0.5.4 (#388)** — `v0.5.4` is published, and the release run verified it against the cookbook, so the next candidate starts from that tag. The override for the abandoned 0.5.3 (`8633db6`) is no longer needed, and leaving it in place would make a later recovery start from a stale base (RELEASING.md, "A merged X.Y.Z is abandoned"). Refs #388.
+
+## [0.5.4] - 2026-10-24
+
+### Upgrade notes
+
+- **0.5.3 was never published (#388).** Its cookbook candidate verification failed: the pinned cookbook commit predated the cookbook's pandas 3.1 golden fix (cubrid-lab/cubrid-cookbook-python#444), so no 0.5.3 tag, GitHub Release or PyPI version exists. 0.5.4 contains every 0.5.3 change below; upgrade from 0.5.2 directly to 0.5.4.
+
+- **`make integration` needs Docker Compose and reads `CUBRID_TEST_PORT` (#402)** — it now runs `docker compose ... up --detach --wait`, so it needs the Docker Compose plugin (v2 or later) as well as Docker. Its port is `CUBRID_TEST_PORT` (default 33000), the variable `make docker-up` already uses, so a `CUBRID_TEST_PORT` exported for a running lab also moves `make integration` onto that port (pass another one). `INTEGRATION_PORT` still works and wins when set. Refs #402.
+
+- **The `dev` extra is now the `dev` dependency group (#398)** — `pip install -e ".[dev]"` no longer installs the contributor tools, and the published wheel and sdist no longer carry a `dev` extra (their runtime dependencies are unchanged). Install them with `make install` or `python -m pip install -e . --group dev`, which needs pip 25.1 or later (`python -m pip install --upgrade pip`). Refs #398.
+
+- **`make integration` now starts its own CUBRID (#379)** — it used to run `pytest -m integration` against a CUBRID you had already started. It now starts a uniquely named `cubrid/cubrid:$(CUBRID_VERSION)` container (default 11.4) with `demodb`, publishes the broker on host port `$(INTEGRATION_PORT)` (default 33000), waits for `demodb`, runs the integration tests against `127.0.0.1:$(INTEGRATION_PORT)/demodb` as `dba` (exported `CUBRID_*` connection variables are ignored), and always removes that container, so it needs Docker. The old behavior is `make integration-local`. `make test` now also measures coverage and fails below `fail_under = 95` and writes `coverage.xml`, `make lint` checks the whole repository (`ruff check .`) instead of `cubrid_mcp_server/` and `tests/`, and `make check` adds `format-check`, so all three can fail where they passed before.
+
+### Added
+
+- **A persistent local CUBRID with Docker Compose (#378)** — a root `docker-compose.yml` defines one service, `cubrid` (`cubrid/cubrid:${CUBRID_VERSION:-11.4}`, `demodb`, `CUBRID_DB_HOST=localhost`, the broker on `127.0.0.1:${CUBRID_TEST_PORT:-33000}` only, a `csql ... SELECT 1` health check, a named data volume, no fixed container name), and new Make targets drive it for manual work: `make docker-up` starts it and waits until it is healthy, `make docker-down` removes the container and network but keeps the data volume, and `make docker-clean` also deletes the volume. `make integration`, `make verify` and the CI live jobs are unchanged: the live lane still starts and always removes its own run-owned container. `CONTRIBUTING.md`, `AGENTS.md` and the README development section (English and Korean) document the targets and how to point `make integration-local` at the service. Refs #378.
+
+- **`make test` and `make integration` write `test-results/` summaries (#405)** — both targets now write a gitignored `test-results/` tree: `make test` writes `test-results/test/junit.xml`, `coverage.xml` and `summary.json` (the root `coverage.xml` that CI uploads to Codecov is still written, as a copy), and `make integration` writes `test-results/integration/junit.xml`, `summary.json`, `environment.json` (Python, package and CUBRID versions, platform and command; never credentials) and, on a failure, `logs/cubrid.log`. The new `scripts/report_results.py` builds `summary.json` (`schema_version`, `status` of `PASS`, `FAIL` or `INCOMPLETE`, counts, coverage) from the JUnit and coverage files, and each command ends with a one-line console summary of the same status and counts. A lane that collected nothing, or in which no test passed, is `INCOMPLETE`, never `PASS`. Exit statuses, test selection and the coverage floor are unchanged, and `make clean` removes `test-results/`. Refs #405.
+
+### Changed
+
+- **`make integration` runs the `docker-compose.yml` service as a run-owned Compose project (#402)** — `scripts/run_integration.py` no longer starts its own `docker run` container: it runs `docker compose --file docker-compose.yml --project-name cubrid-mcp-it-<random id> up --detach --wait cubrid` with `CUBRID_VERSION` and `CUBRID_TEST_PORT` set, so `make integration` and `make docker-up` share one service definition (image tag, `demodb`, health check, shared-memory size, loopback-only broker). Readiness is the service's `csql ... SELECT 1` health check instead of a separate `docker exec` probe loop; on a failure it prints `docker compose logs cubrid`; and it always runs `down --volumes` on that project, which removes its container, network and named volumes, on success, failure, a readiness failure, SIGINT or SIGTERM (the cleanup runs in its own session, so a second Ctrl-C cannot stop it). The exit-status rules are unchanged. The project name is unique per run, so concurrent runs on different ports, and a `make docker-up` lab, are never touched. `CUBRID_TEST_PORT` is now the one port variable of both lanes, with `INTEGRATION_PORT` kept as a compatibility override. The offline tests use a fake `docker compose`; `CONTRIBUTING.md`, `AGENTS.md`, the README development section (English and Korean) and the `docker-compose.yml` comments describe it. Refs #402.
+
+- **Contributor tools are a PEP 735 `dev` dependency group; the Makefile runs them through one interpreter (#398)** — the pins that were in `[project.optional-dependencies].dev` (including `ruff==0.17.1` and `mypy==2.4.0`) now live unchanged in `[dependency-groups].dev`; there is no lock file and no other group. `make install` runs `$(PYTHON) -m pip install -e . --group dev`, and `pytest`, `ruff` and `mypy` run as `$(PYTHON) -m ...` instead of bare executables, so an activated virtualenv is honored even when `PATH` lists another one. `PYTHON ?= python3`, `PYTEST`, `RUFF` and `MYPY` are all overridable (`make lint PYTHON=.venv/bin/python`, `make lint RUFF=ruff`); the commands, flags, coverage floor and Docker lifecycle of `check`, `test`, `verify` and `integration` are unchanged. Refs #398.
+
+- **The Makefile is the canonical local and CI interface (#379)** — new targets: `doctor` (checks Python 3.11+, `ruff`, `mypy`, `pytest`, `pytest-cov` and `pytest-asyncio`; exits non-zero without a success line if any is missing), `format-check` (`ruff format --check .`), `verify` (`check` + `test`, no Docker), `integration` (the run-owned Docker lifecycle in `scripts/run_integration.py`: start, readiness wait, `pytest -m integration -v`, the container log on a failure, removal of the container and its anonymous volumes on success, failure, SIGINT or SIGTERM; the first failing step's exit status, or 128 + the signal number) and `integration-local`. `lint`, `format-check` and `typecheck` use the same paths and flags as CI, `format` is the only target that edits files, `test` takes extra pytest arguments in `PYTEST_ARGS`, `clean` also removes `.ruff_cache`, `.coverage`, `coverage.xml` and `htmlcov` (all gitignored, generated files), and `make help` groups the targets by purpose. Refs #379.
+
+* remove the App-owned agent-review publisher ([#397](https://github.com/cubrid-lab/cubrid-mcp-server/issues/397)) ([e5bf28e](https://github.com/cubrid-lab/cubrid-mcp-server/commit/e5bf28e006f8c005c7d9334ed87ee3531bf61eb2))
+
+### Fixed
+
+- **A failed service-log save no longer skips `make integration` cleanup** — with `--results-dir`, an I/O error while writing `logs/cubrid.log` after a failing lane used to escape before `docker compose down --volumes`, leaving the run-owned project behind and losing the lane's exit status. Saving the log is now best-effort: the error is printed as a warning, the project is still taken down and the summary keeps the lane's status.
+
+* **test:** never let a failed service-log save skip make integration cleanup ([#416](https://github.com/cubrid-lab/cubrid-mcp-server/issues/416)) ([dec3942](https://github.com/cubrid-lab/cubrid-mcp-server/commit/dec39420852edc175e36f5d9afa5953685c7c937))
+
+### Documentation
+
+- **Install instructions use the `dev` group (#398)** — `CONTRIBUTING.md`, the README (English and Korean), `scripts/doctor.py` and `THIRD_PARTY_LICENSES.md` replace `.[dev]` with `--group dev`, document the pip 25.1 requirement and the Makefile overrides, and explain that the dev table's `cubrid-mcp-server` attribution is hand-kept because installed metadata does not record group membership. Refs #398.
+
+- **Make targets in the contributor docs (#379)** — `CONTRIBUTING.md`, `AGENTS.md`, the PR template and the README development section (English and Korean) describe the new targets, the `make integration` variables and that CI calls the same targets. Refs #379.
+
+* **agents:** require repository-local issue authoring checks ([#383](https://github.com/cubrid-lab/cubrid-mcp-server/issues/383)) ([4f04af7](https://github.com/cubrid-lab/cubrid-mcp-server/commit/4f04af7b503cae0e2fcc97b79326a629d9e68aea))
+* enforce repository-local issue drafting ([4f04af7](https://github.com/cubrid-lab/cubrid-mcp-server/commit/4f04af7b503cae0e2fcc97b79326a629d9e68aea))
+* **ko:** replace the mistranslated redaction term in the Korean docs ([#389](https://github.com/cubrid-lab/cubrid-mcp-server/issues/389)) ([2621d8b](https://github.com/cubrid-lab/cubrid-mcp-server/commit/2621d8b415a1dcf7ea8a34fab758126bb6b5f216)), refs [#290](https://github.com/cubrid-lab/cubrid-mcp-server/issues/290)
+* **triage:** clarify PR overlap and execution precedence ([440166a](https://github.com/cubrid-lab/cubrid-mcp-server/commit/440166adcf3b8a1e51cda51353a2c4f762adec40)), refs [#410](https://github.com/cubrid-lab/cubrid-mcp-server/issues/410)
+
+### CI
+
+- **The release workflow verifies against the current cookbook, and preparation restarts after the abandoned 0.5.3 (#388)** — 0.5.3 was not published: its cookbook candidate verification failed at the pinned cookbook commit `0d8b5bb`, which predates the cookbook's pandas 3.1 golden fix (cubrid-lab/cubrid-cookbook-python#444), so nothing was tagged, released or uploaded. Both `smoke-test.yml@` pins in `publish-pypi.yml` (`verify-candidate` and `verify-cookbook`) move to cookbook `main` `fbaaa8c`; the called workflow's inputs and outputs are unchanged. The top-level `last-release-sha` in `release-please-config.json` is set to the 0.5.3 merge `8633db6` so the next candidate starts after it (RELEASING.md, "A merged X.Y.Z is abandoned"); remove it after the next release is tagged. Refs #388.
+
+* **release:** verify against the current cookbook and restart after the abandoned 0.5.3 ([#424](https://github.com/cubrid-lab/cubrid-mcp-server/issues/424)) ([1d1e5a1](https://github.com/cubrid-lab/cubrid-mcp-server/commit/1d1e5a18f1496a9b4a5c6f5794bd488edbf020cd)), refs [#388](https://github.com/cubrid-lab/cubrid-mcp-server/issues/388)
+
+- **CI publishes and uploads the test results (#405)** — the `lint-and-test` job and both `integration` jobs (`ci.yml`, `integration-full.yml`) now append the one-line `test-results/*/summary.json` summary to the run's job summary (`scripts/report_results.py step-summary`) and upload `test-results/` with `actions/upload-artifact` (the commit already pinned in `publish-pypi.yml`, v7) on every run, pass or fail, as one `test-results-...` artifact per matrix entry kept for 7 days. No permissions, secrets or triggers change, and the Codecov upload is unchanged. Closes #405.
+
+- **CI installs the `dev` group (#398)** — the `lint-and-test`, `lowest-direct`, `integration` and `integration-full` jobs run `uv pip install --system [--resolution lowest-direct] -e . --group dev` with the same pinned uv (`0.12.17`, which supports `--group`). The upstream canary jobs upgrade pip to 25.1 or later and run `python -m pip install -e . --group dev`. No workflow permissions, triggers or secrets change. Refs #398.
+
+- **CI calls the Make targets (#379)** — the unit lane runs `make lint`, `make format-check`, `make typecheck` and `make test` (the Codecov upload of `coverage.xml` stays a CI-only step), and the live jobs in `ci.yml` and `integration-full.yml` run `make integration CUBRID_VERSION=${{ matrix.cubrid }}` instead of inline `docker run`, readiness and `docker logs` steps; the container log is still printed on a failure. The live container no longer publishes the unused CUBRID master port 1523. The Python and CUBRID matrices, the lane selection, the coverage threshold and the test selection are unchanged; `lowest-direct` and the upstream canary still run pytest directly without coverage. Refs #379.
+- **Editing `make integration` runs the live lane (#381)** — `scripts/ci_scope.py` now selects the default live CUBRID lane, besides the unit lane, for a pull request that changes the `Makefile` or `scripts/run_integration.py`, which implement the live job's `make integration`. Before, both were unit-only tooling, so a PR that broke the integration lifecycle passed PR CI. Other `scripts/*` files stay unit-only. Refs #381.
+
+### Tests
+
+- **The live lane fails closed and pins the read-only rejection (#403)** — `tests/conftest.py` makes `pytest -m integration` exit non-zero when no integration test passed (none collected, all deselected or all skipped) or when a test was skipped because the CUBRID server was not configured or unreachable, pinned offline by `tests/test_integration_guard.py`; runs that do not select the marker, such as `make test`, are unchanged. A module fixture creates and drops a disposable `mcp_it_fixture` table, so the five tests that skipped with `no user tables` against a fresh `demodb` now run, and a new live test asserts that INSERT, UPDATE, DELETE and DROP through the default read-only `execute_query` are rejected and leave the table unchanged. The read-only enforcement code is unchanged. Refs #378.
+- **Compose environment contract tests (#378)** — `tests/test_makefile.py` pins the `docker-up`, `docker-down` and `docker-clean` commands (only `docker-clean` passes `--volumes`), that `make integration` and `scripts/run_integration.py` do not use Compose, and that `docker-compose.yml` has a single `cubrid` service without `container_name`, the Makefile's default `CUBRID_VERSION` and `CUBRID_TEST_PORT`, a loopback-only broker port, the runner's database name, the `SELECT 1` health check and a named data volume. Refs #378.
+- **Install and interpreter drift tests (#398)** — `tests/test_makefile.py` pins `make install`, that every tool recipe follows `PYTHON` and that `PYTHON`, `PYTEST`, `RUFF` and `MYPY` can each be overridden, that `pyproject.toml` has a single `dev` dependency group and no package extra, that no tracked file still installs `.[dev]`, and the CI and canary install commands; `tests/test_workflow_installs.py` requires every uv install to end in `-e . --group dev`; `tests/test_third_party_licenses.py` reads the dev pins from the group. Refs #398.
+
+- **Release-note extraction edge cases (#385)** — `tests/test_extract_release_notes.py` pins that a tag without the `v` prefix (`1.2.0`) writes notes byte-identical to the prefixed form (`v1.2.0`), including the generated `v1.1.0...v1.2.0` compare link, and that an undated `## [1.3.0]` header and a `## [Unreleased]` header are not release sections: extracting them exits 1 with `Missing dated CHANGELOG section` and writes no `RELEASE_NOTES.md`. Refs #385.
+- **Makefile semantics and CI parity tests (#379)** — `tests/test_makefile.py` reads each target with `make -n` and pins its commands (CI paths and flags, `check` and `verify` composition, coverage enforcement, only `format` mutating, `clean` removing only gitignored untracked paths, grouped `help`, a fail-closed `doctor`) and that the CI jobs call the targets; `tests/test_run_integration.py` drives `scripts/run_integration.py` with a fake `docker` and checks cleanup and exit statuses on success, test failure, start failure, readiness timeout, cleanup failure, missing Docker, SIGINT and SIGTERM. Refs #379.
+
 ## [0.5.2] - 2026-10-20
 
 ### Fixed

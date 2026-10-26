@@ -1,5 +1,67 @@
 # Changelog
 
+## [0.6.0](https://github.com/cubrid-lab/cubrid-mcp-server/compare/v0.5.6...v0.6.0) (2026-10-25)
+
+
+### Added
+
+* **make:** run the live integration lane in make verify ([#447](https://github.com/cubrid-lab/cubrid-mcp-server/issues/447)) ([e694f56](https://github.com/cubrid-lab/cubrid-mcp-server/commit/e694f569cbbe62034a275a846b90bd8ed7e827f1))
+* **make:** write an aggregate verification summary under test-results/verify ([#450](https://github.com/cubrid-lab/cubrid-mcp-server/issues/450)) ([3260e38](https://github.com/cubrid-lab/cubrid-mcp-server/commit/3260e3810ec8ed1a285f3f84731ac96271ca9892)), closes [#449](https://github.com/cubrid-lab/cubrid-mcp-server/issues/449)
+
+## [0.5.6](https://github.com/cubrid-lab/cubrid-mcp-server/compare/v0.5.5...v0.5.6) (2026-10-25)
+
+
+### Fixed
+
+* **config:** name the variable when a boolean setting is invalid ([#443](https://github.com/cubrid-lab/cubrid-mcp-server/issues/443)) ([8fc77db](https://github.com/cubrid-lab/cubrid-mcp-server/commit/8fc77db9e5379706dae95b1e85894be677f92df7)), closes [#435](https://github.com/cubrid-lab/cubrid-mcp-server/issues/435)
+
+
+### Documentation
+
+* **agents:** align independent MCP safety review and local title rules ([7592c53](https://github.com/cubrid-lab/cubrid-mcp-server/commit/7592c534b089882077f2b5da8345659aeb041d5c))
+* **agents:** clarify MCP safety review and local PR policy ([#442](https://github.com/cubrid-lab/cubrid-mcp-server/issues/442)) ([7592c53](https://github.com/cubrid-lab/cubrid-mcp-server/commit/7592c534b089882077f2b5da8345659aeb041d5c))
+
+## [0.5.5](https://github.com/cubrid-lab/cubrid-mcp-server/compare/v0.5.4...v0.5.5) (2026-10-25)
+
+
+### Fixed
+
+* **context:** log suppressed connection close failures ([#439](https://github.com/cubrid-lab/cubrid-mcp-server/issues/439)) ([9924e2c](https://github.com/cubrid-lab/cubrid-mcp-server/commit/9924e2c94454eb0abda19776e23135d12acca381))
+* **context:** raise RuntimeError for unset audit loggers instead of asserting ([#438](https://github.com/cubrid-lab/cubrid-mcp-server/issues/438)) ([b6d8bb0](https://github.com/cubrid-lab/cubrid-mcp-server/commit/b6d8bb0e79022dc7a0df7282c87fae8784fdcf69))
+* **reporting:** redact credentials embedded in environment command metadata ([#433](https://github.com/cubrid-lab/cubrid-mcp-server/issues/433)) ([702aac6](https://github.com/cubrid-lab/cubrid-mcp-server/commit/702aac6f4b4c43a5b2abdaa36a4adfe645c0830a))
+
+
+### Documentation
+
+* **server:** document the table-resolution and schema helper functions ([#440](https://github.com/cubrid-lab/cubrid-mcp-server/issues/440)) ([c645e6c](https://github.com/cubrid-lab/cubrid-mcp-server/commit/c645e6c6b272a8dadfa1f1113c07b9f7571422c5)), closes [#432](https://github.com/cubrid-lab/cubrid-mcp-server/issues/432)
+
+## [0.5.4](https://github.com/cubrid-lab/cubrid-mcp-server/compare/v0.5.3...v0.5.4) (2026-10-24)
+
+
+### CI
+
+* **release:** verify against the current cookbook and restart after the abandoned 0.5.3 ([#424](https://github.com/cubrid-lab/cubrid-mcp-server/issues/424)) ([1d1e5a1](https://github.com/cubrid-lab/cubrid-mcp-server/commit/1d1e5a18f1496a9b4a5c6f5794bd488edbf020cd)), closes [#388](https://github.com/cubrid-lab/cubrid-mcp-server/issues/388)
+
+## [0.5.3](https://github.com/cubrid-lab/cubrid-mcp-server/compare/v0.5.2...v0.5.3) (2026-10-24)
+
+
+### Fixed
+
+* **test:** never let a failed service-log save skip make integration cleanup ([#416](https://github.com/cubrid-lab/cubrid-mcp-server/issues/416)) ([dec3942](https://github.com/cubrid-lab/cubrid-mcp-server/commit/dec39420852edc175e36f5d9afa5953685c7c937))
+
+
+### Changed
+
+* remove the App-owned agent-review publisher ([#397](https://github.com/cubrid-lab/cubrid-mcp-server/issues/397)) ([e5bf28e](https://github.com/cubrid-lab/cubrid-mcp-server/commit/e5bf28e006f8c005c7d9334ed87ee3531bf61eb2))
+
+
+### Documentation
+
+* **agents:** require repository-local issue authoring checks ([#383](https://github.com/cubrid-lab/cubrid-mcp-server/issues/383)) ([4f04af7](https://github.com/cubrid-lab/cubrid-mcp-server/commit/4f04af7b503cae0e2fcc97b79326a629d9e68aea))
+* enforce repository-local issue drafting ([4f04af7](https://github.com/cubrid-lab/cubrid-mcp-server/commit/4f04af7b503cae0e2fcc97b79326a629d9e68aea))
+* **ko:** replace the mistranslated redaction term in the Korean docs ([#389](https://github.com/cubrid-lab/cubrid-mcp-server/issues/389)) ([2621d8b](https://github.com/cubrid-lab/cubrid-mcp-server/commit/2621d8b415a1dcf7ea8a34fab758126bb6b5f216)), closes [#290](https://github.com/cubrid-lab/cubrid-mcp-server/issues/290)
+* **triage:** clarify PR overlap and execution precedence ([440166a](https://github.com/cubrid-lab/cubrid-mcp-server/commit/440166adcf3b8a1e51cda51353a2c4f762adec40)), closes [#410](https://github.com/cubrid-lab/cubrid-mcp-server/issues/410)
+
 ## [0.5.2](https://github.com/cubrid-lab/cubrid-mcp-server/compare/v0.5.1...v0.5.2) (2026-10-20)
 
 
