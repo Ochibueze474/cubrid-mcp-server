@@ -51,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `execute_write` into a uniquely named table that it always drops, and shows DDL and
   multi-statement input are still refused. Test-only; the server is unchanged.
 
+- **schema_definitions rejects an unknown table before any metadata query (#329)** — Adds a unit test that calls     `schema_definitions` with a table missing from the catalog. The test asserts the `ValueError` and that only the table-name  lookup ran.
+
 ## [0.6.0] - 2026-10-25
 
 ### Upgrade notes
@@ -304,7 +306,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Tests
 
 - **Empty `CUBRID_PASSWORD` is covered** — `tests/test_config.py` checks that an empty password is accepted, as CUBRID's default `dba` user has none.
-- Cover `schema_definitions` with an unknown table name (#329).
 
 ## [0.5.0] - 2026-10-12
 
