@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **README and docs site show the transparent brand icon (#494)** — the icon URL pinned in the README, its translations and `mkdocs.yml` (logo and favicon) now points at brand revision `e55990a`, where the MCP icon's three-way router is real transparency instead of white paint. Documentation only; behavior is unchanged.
 
+### Tests
+
+- **schema_definitions rejects an unknown table before any metadata query (#329)** — a unit
+  test calls `schema_definitions` with a table missing from the catalog and asserts the
+  `ValueError` and that only the table-name lookup ran. Test-only; the server is unchanged.
+
 ## [0.7.0] - 2026-10-27
 
 ### Added
@@ -65,8 +71,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged. One more test enables `CUBRID_MCP_WRITE=1`, commits an `INSERT` through
   `execute_write` into a uniquely named table that it always drops, and shows DDL and
   multi-statement input are still refused. Test-only; the server is unchanged.
-
-- **schema_definitions rejects an unknown table before any metadata query (#329)** — Adds a unit test that calls     `schema_definitions` with a table missing from the catalog. The test asserts the `ValueError` and that only the table-name  lookup ran.
 
 ## [0.6.0] - 2026-10-25
 
